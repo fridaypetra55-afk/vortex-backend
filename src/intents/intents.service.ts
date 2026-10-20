@@ -12,6 +12,7 @@ import { Intent, IntentAuditEntry, IntentState, PendingIntentOp } from "./intent
 import { INTENTS_REPOSITORY, IIntentsRepository, isVersionConflict, MutationResult } from "./intents.repository";
 import { INTENTS_UNIT_OF_WORK, IIntentsUnitOfWork } from "./intents.unit-of-work";
 import { IntentDeadlineScheduler } from "./intents-deadline.jobs";
+import { transition, TransitionContext, TransitionPlan } from "./state-machine";
 import { IOutboxWriter, NewOutboxEntry } from "../soroban/outbox.repository";
 import { buildOutboxInvocation, createIntentEntry } from "../soroban/outbox-operations";
 import { AppConfig } from "../config/configuration";
@@ -821,15 +822,21 @@ export class IntentsService {
    * unfairly slashed for a deadline that was never realistic.
    * Returns null when the intent is not found, not open, or past deadline.
    */
-  async acceptIfOpen(id: string, solver: string, now?: number): Promise<Intent | null> {
+  async acceptIfOpen(
+    id: string,
+    solver: string,
+    now?: number,
+    ctx?: Partial<TransitionContext>,
+  ): Promise<Intent | null> {
     const intent = await this.repo.findById(id);
     if (!intent) return null;
     const nowSec = now ?? Math.floor(Date.now() / 1000);
     const fillWindow =
       CHAIN_FILL_WINDOW_DEFAULTS[intent.srcChain] ?? DEFAULT_FILL_WINDOW_SECONDS;
+    const plan = transition({ intentId: id, state: "open" }, "accepted", { actor: solver, ...ctx });
     const updated = written(await this.repo.acceptIfOpen(id, solver, nowSec + fillWindow, nowSec));
     if (updated !== null) {
-      this.countTransition("open", "accepted");
+      this.recordTransition(plan, { deadline: updated.deadline });
       // Issue #550: the fill window is now the binding deadline — schedule the
       // fill-window job so the sweeper settles it through the jobs queue.
       this.deadlines?.scheduleFillWindow(updated);
@@ -876,10 +883,14 @@ export class IntentsService {
     solver: string,
     patch: Omit<Partial<Intent>, "state" | "solver">,
     now?: number,
+    ctx?: Partial<TransitionContext>,
   ): Promise<Intent | null> {
     const nowSec = now ?? Math.floor(Date.now() / 1000);
+    const plan = transition({ intentId: id, state: "accepted" }, "filled", { actor: solver, ...ctx });
     const updated = written(await this.repo.fillIfAccepted(id, solver, patch, nowSec));
-    if (updated !== null) this.countTransition("accepted", "filled");
+    if (updated !== null) {
+      this.recordTransition(plan, { fillAmount: patch.fillAmount, txHash: patch.txHash });
+    }
     if (this.beginShadowObservation()) {
       // Report from `patch` rather than re-reading: on a lost race the stored
       // record belongs to whoever won, so its fill amount is not the amount
@@ -928,9 +939,10 @@ export class IntentsService {
    * Returns null when the intent is not found or is not in the "open" state
    * (e.g. a concurrent accept() or sweeper expiry already transitioned it).
    */
-  async cancelIfOpen(id: string): Promise<Intent | null> {
+  async cancelIfOpen(id: string, ctx?: Partial<TransitionContext>): Promise<Intent | null> {
+    const plan = transition({ intentId: id, state: "open" }, "cancelled", { actor: "system", ...ctx });
     const updated = written(await this.repo.cancelIfOpen(id));
-    if (updated !== null) this.countTransition("open", "cancelled");
+    if (updated !== null) this.recordTransition(plan);
     if (this.beginShadowObservation()) {
       const subject = updated ?? (await this.repo.findById(id));
       if (subject) {
@@ -978,17 +990,19 @@ export class IntentsService {
     id: string,
     op: PendingIntentOp,
     txHash?: string,
+    ctx?: Partial<TransitionContext>,
   ): Promise<Intent | null> {
     const intent = await this.repo.findById(id);
     if (!intent) return null;
+    const plan = transition(intent, PENDING_STATE_BY_OP[op], { actor: "system", ...ctx });
     const updated = written(
-      await this.repo.update(id, {
-        state: PENDING_STATE_BY_OP[op],
+      await this.repo.transitionIf(id, plan.from, {
+        state: plan.to,
         pendingOp: op,
         pendingTxHash: txHash,
       }),
     );
-    if (updated !== null) this.countTransition(intent.state, updated.state);
+    if (updated !== null) this.recordTransition(plan, { op, ...(txHash ? { txHash } : {}) });
     return updated;
   }
 
@@ -1001,19 +1015,47 @@ export class IntentsService {
    *   in a pending state — confirmation only means something for a write that
    *   is actually in flight.
    */
-  async confirmIntent(id: string): Promise<Intent | null> {
+  async confirmIntent(id: string, ctx?: Partial<TransitionContext>): Promise<Intent | null> {
     const intent = await this.repo.findById(id);
     if (!intent) return null;
     const confirmed = CONFIRMED_STATE_BY_PENDING[intent.state];
     if (!confirmed) return null;
+    const plan = transition(intent, confirmed, { actor: "system", ...ctx });
     const updated = written(
-      await this.repo.update(id, {
+      await this.repo.transitionIf(id, plan.from, {
         state: confirmed,
         pendingTxHash: undefined,
         pendingOp: undefined,
       }),
     );
-    if (updated !== null) this.countTransition(intent.state, confirmed);
+    if (updated !== null) {
+      this.recordTransition(plan, intent.pendingTxHash ? { txHash: intent.pendingTxHash } : {});
+    }
+    return updated;
+  }
+
+  /**
+   * Roll a slash back (issue #397 saga, issue #406 compensation edge): move a
+   * `slashed` intent to `filled` (the fill landed after all) or `expired` (the
+   * slash could not be submitted). These edges leave a terminal state, so the
+   * plan and the write both carry the explicit override.
+   *
+   * @returns The compensated intent, or null when it is absent or no longer
+   *   `slashed` (nothing to roll back).
+   */
+  async compensateSlash(
+    id: string,
+    to: "filled" | "expired",
+    ctx: TransitionContext,
+    patch: Pick<Partial<Intent>, "txHash"> = {},
+  ): Promise<Intent | null> {
+    const intent = await this.repo.findById(id);
+    if (!intent || intent.state !== "slashed") return null;
+    const plan = transition(intent, to, { ...ctx, override: true });
+    const updated = written(
+      await this.repo.transitionIf(id, "slashed", { ...patch, state: to }, { override: true }),
+    );
+    if (updated !== null) this.recordTransition(plan);
     return updated;
   }
 
@@ -1056,9 +1098,10 @@ export class IntentsService {
    * Used by the sweeper so a concurrent user cancel() or solver accept()
    * always wins the race.
    */
-  async expireIfOpen(id: string): Promise<Intent | null> {
+  async expireIfOpen(id: string, ctx?: Partial<TransitionContext>): Promise<Intent | null> {
+    const plan = transition({ intentId: id, state: "open" }, "expired", { actor: "system", ...ctx });
     const updated = written(await this.repo.expireIfOpen(id));
-    if (updated !== null) this.countTransition("open", "expired");
+    if (updated !== null) this.recordTransition(plan, { deadline: updated.deadline });
     if (this.beginShadowObservation()) {
       const subject = updated ?? (await this.repo.findById(id));
       if (subject) {
@@ -1084,9 +1127,17 @@ export class IntentsService {
   async slashIfAccepted(
     id: string,
     patch: { slashedAt: number; slashReason: string },
+    ctx?: Partial<TransitionContext>,
   ): Promise<Intent | null> {
+    const plan = transition({ intentId: id, state: "accepted" }, "slashed", {
+      actor: "system",
+      reason: patch.slashReason,
+      ...ctx,
+    });
     const updated = written(await this.repo.slashIfAccepted(id, patch));
-    if (updated !== null) this.countTransition("accepted", "slashed");
+    if (updated !== null) {
+      this.recordTransition(plan, { solver: updated.solver, slashedAt: patch.slashedAt });
+    }
     if (this.beginShadowObservation()) {
       const subject = updated ?? (await this.repo.findById(id));
       // An "accepted" intent always carries a solver. A record without one is
@@ -1144,14 +1195,34 @@ export class IntentsService {
     reason: string,
     metadata?: Record<string, unknown>,
   ): void {
-    const entry: IntentAuditEntry = {
+    this.writeAudit(intentId, {
       timestamp: new Date().toISOString(),
       toState,
       actor,
       reason,
       ...(metadata ? { metadata } : {}),
-    };
+    });
+  }
 
+  /**
+   * Apply the common side effects of a persisted transition plan (issue
+   * #406): the funnel counter and the audit entry. Called once, right after
+   * the conditional write won. `extra` adds write-time details (the new
+   * deadline, the fill amount, …) to the audit metadata; undefined values are
+   * dropped and caller-supplied metadata wins on a key clash.
+   */
+  private recordTransition(plan: TransitionPlan, extra: Record<string, unknown> = {}): void {
+    this.countTransition(plan.from, plan.to);
+    const defined = Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined));
+    this.writeAudit(plan.intentId, {
+      ...plan.audit,
+      metadata: { ...defined, ...plan.audit.metadata },
+    });
+  }
+
+  /** In-memory + persistent audit write shared by every audit path. */
+  private writeAudit(intentId: string, entry: IntentAuditEntry): void {
+    const { toState, actor, reason, metadata } = entry;
     // 1. In-memory write (synchronous, always succeeds)
     const entries = this.auditLog.get(intentId) ?? [];
     entries.push(entry);

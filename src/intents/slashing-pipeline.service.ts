@@ -417,20 +417,25 @@ export class SlashingPipelineService implements OnModuleInit, OnModuleDestroy {
 
     await this.solversService.rollbackPenalty(slash.intentId, slash.solverAddress);
 
-    const intent = await this.intentsService.get(slash.intentId);
-    if (intent?.state === "slashed") {
-      if (reason === "fill_landed") {
-        await this.intentsService.update(slash.intentId, { state: "filled", txHash: extra.fillTxHash });
-      } else {
-        await this.intentsService.update(slash.intentId, { state: "expired" });
-      }
-    }
+    // Issue #406: the rollback is a compensation edge out of `slashed`,
+    // applied (and audited) by the state machine with an explicit override.
+    // When the intent is not slashed there is nothing to roll back, but the
+    // saga outcome is still recorded on the intent's audit trail.
     const toState = reason === "fill_landed" ? "filled" : "expired";
-    this.intentsService.appendAuditEntry(slash.intentId, toState, actor, `slash cancelled: ${reason}`, {
+    const auditMetadata = {
       solver: slash.solverAddress,
       fillTxHash: extra.fillTxHash,
       note: extra.note,
-    });
+    };
+    const compensated = await this.intentsService.compensateSlash(
+      slash.intentId,
+      toState,
+      { actor, reason: `slash cancelled: ${reason}`, metadata: auditMetadata },
+      reason === "fill_landed" ? { txHash: extra.fillTxHash } : {},
+    );
+    if (!compensated) {
+      this.intentsService.appendAuditEntry(slash.intentId, toState, actor, `slash cancelled: ${reason}`, auditMetadata);
+    }
     await this.intentsGateway.broadcast({
       type: "intent_slash_cancelled",
       intentId: slash.intentId,
