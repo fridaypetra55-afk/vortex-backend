@@ -37,6 +37,13 @@ function makeConfigService(
       partitionPrefix: "date=",
       maxRowsPerFile: 100000,
     },
+    auditPartition: {
+      maintenanceEnabled: false,
+      intervalMs: 21_600_000,
+      premakeMonths: 3,
+      retentionMonths: 0,
+      dropAfterExport: false,
+    },
     stellar,
     treasury: { address: "" },
     onchainIntentsEnabled: false,
