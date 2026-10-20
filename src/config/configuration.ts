@@ -426,6 +426,25 @@ export interface AppConfig {
     maxSubmitAttempts: number;
   };
 
+  /** Contract-state TTL keeper (issue #395). */
+  ttlKeeper: {
+    /** Off by default: the keeper submits paid ExtendFootprintTTL transactions. */
+    enabled: boolean;
+    intervalMs: number;
+    /** Extend entries whose remaining TTL is below this many ledgers. */
+    thresholdLedgers: number;
+    /** Extend to this many ledgers beyond the current ledger. */
+    extendToLedgers: number;
+    /** Max fees (stroops) the keeper may spend per UTC day. */
+    dailyBudgetStroops: number;
+    /** Ledger keys per ExtendFootprintTTL transaction (Soroban footprint limit). */
+    maxKeysPerTx: number;
+    /** Contract `DataKey` variant holding an intent, keyed by intent ID. */
+    intentKeyVariant: string;
+    /** Solver-registry `DataKey` variant holding a bond, keyed by solver address. */
+    bondKeyVariant: string;
+  };
+
   // #413 — Cold-storage archival
   archival: {
     enabled: boolean;
@@ -620,6 +639,17 @@ export default (): AppConfig => ({
     challengeWindowSeconds: parseInt(process.env.SLASH_CHALLENGE_WINDOW_SECONDS ?? "600", 10),
     clockSkewToleranceSeconds: parseInt(process.env.SLASH_CLOCK_SKEW_TOLERANCE_SECONDS ?? "30", 10),
     maxSubmitAttempts: parseInt(process.env.SLASH_MAX_SUBMIT_ATTEMPTS ?? "5", 10),
+  },
+
+  ttlKeeper: {
+    enabled: process.env.TTL_KEEPER_ENABLED === "true",
+    intervalMs: parseInt(process.env.TTL_KEEPER_INTERVAL_MS ?? "3600000", 10),
+    thresholdLedgers: parseInt(process.env.TTL_KEEPER_THRESHOLD_LEDGERS ?? "120960", 10),
+    extendToLedgers: parseInt(process.env.TTL_KEEPER_EXTEND_TO_LEDGERS ?? "518400", 10),
+    dailyBudgetStroops: parseInt(process.env.TTL_KEEPER_DAILY_BUDGET_STROOPS ?? "50000000", 10),
+    maxKeysPerTx: parseInt(process.env.TTL_KEEPER_MAX_KEYS_PER_TX ?? "20", 10),
+    intentKeyVariant: process.env.TTL_KEEPER_INTENT_KEY_VARIANT ?? "Intent",
+    bondKeyVariant: process.env.TTL_KEEPER_BOND_KEY_VARIANT ?? "Bond",
   },
 
   archival: {

@@ -564,6 +564,19 @@ export const envValidationSchema = Joi.object({
   ORACLE_FAIL_OPEN_MAX_USD: Joi.number().min(0).default(100),
 
   // ── Transactional outbox (#396 #397) ──────────────────────────────────────
+  // ── Contract-state TTL keeper (issue #395) ─────────────────────────────────
+  TTL_KEEPER_ENABLED: Joi.boolean().default(false),
+  TTL_KEEPER_INTERVAL_MS: Joi.number().integer().min(60000).default(3600000),
+  // ~7 days of 5 s ledgers.
+  TTL_KEEPER_THRESHOLD_LEDGERS: Joi.number().integer().min(1).default(120960),
+  // ~30 days; must be above the threshold or every run would re-extend.
+  TTL_KEEPER_EXTEND_TO_LEDGERS: Joi.number().integer().min(1).greater(Joi.ref("TTL_KEEPER_THRESHOLD_LEDGERS")).default(518400),
+  TTL_KEEPER_DAILY_BUDGET_STROOPS: Joi.number().integer().min(0).default(50000000),
+  // Soroban caps the read footprint per transaction; stay under the network limit.
+  TTL_KEEPER_MAX_KEYS_PER_TX: Joi.number().integer().min(1).max(100).default(20),
+  TTL_KEEPER_INTENT_KEY_VARIANT: Joi.string().pattern(/^[A-Za-z0-9_]{1,32}$/).default("Intent"),
+  TTL_KEEPER_BOND_KEY_VARIANT: Joi.string().pattern(/^[A-Za-z0-9_]{1,32}$/).default("Bond"),
+
   OUTBOX_RELAY_ENABLED: Joi.boolean().default(true),
   OUTBOX_RELAY_INTERVAL_MS: Joi.number().integer().min(100).default(2000),
   OUTBOX_RELAY_BATCH_SIZE: Joi.number().integer().min(1).default(10),

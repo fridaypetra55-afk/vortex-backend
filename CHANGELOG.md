@@ -28,6 +28,7 @@ Commit message format is enforced via [commitlint](https://commitlint.js.org/) s
 ## [Unreleased]
 
 ### Added
+- Contract-state TTL keeper: a leader-elected job that extends the TTL of the contract instances, WASM code, active intents and active solver bonds with batched `ExtendFootprintTTL` transactions before they archive. Configurable threshold, extension target and daily fee budget (`TTL_KEEPER_*`); admin report at `GET /api/v1/admin/soroban/ttl`; metrics `vortex_soroban_ttl_*` and a page alert when an instance or code TTL drops below 7 days (Closes #395).
 - Protocol fee engine with pair > chain > default rules, volume tiers, integrator referral share, and a double-entry fee ledger. Quotes include the fee split and rule version. Treasury stats read the ledger once it has postings (Closes #438).
 - Deadline jobs `expire-intent` and `fill-window-expired` replace the 30s sweeper poll. A safety sweep (`SAFETY_SWEEP_INTERVAL_MS`, default 5 min) catches lost jobs and increments `vortex_sweeper_safety_caught_total` (Closes #437).
 - `scripts/generate-client.ts` — generates a typed TypeScript API client from the live
