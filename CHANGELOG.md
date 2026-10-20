@@ -28,6 +28,7 @@ Commit message format is enforced via [commitlint](https://commitlint.js.org/) s
 ## [Unreleased]
 
 ### Added
+- Zero-downtime migration of `intents.created_at/deadline/filled_at` and `solvers.registered_at/last_active_at` from epoch `INTEGER` to `timestamptz` (expand/contract). Expand: nullable `*_ts` twins kept in sync by the repositories and a DB trigger, plus nine `CONCURRENTLY`-built indexes. Backfill: resumable `npm run db:backfill-timestamps` (≤ 5k rows per transaction, 1 s lock timeout). Reads switch via `TIMESTAMP_READ_SOURCE`. The NOT NULL + column-drop contract steps are staged in `prisma/staged-migrations/` behind a verification guard. API payloads are unchanged (Closes #409).
 - Protocol fee engine with pair > chain > default rules, volume tiers, integrator referral share, and a double-entry fee ledger. Quotes include the fee split and rule version. Treasury stats read the ledger once it has postings (Closes #438).
 - Deadline jobs `expire-intent` and `fill-window-expired` replace the 30s sweeper poll. A safety sweep (`SAFETY_SWEEP_INTERVAL_MS`, default 5 min) catches lost jobs and increments `vortex_sweeper_safety_caught_total` (Closes #437).
 - `scripts/generate-client.ts` — generates a typed TypeScript API client from the live

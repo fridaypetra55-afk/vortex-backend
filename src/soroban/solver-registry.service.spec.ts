@@ -37,6 +37,7 @@ function makeConfigService(
       partitionPrefix: "date=",
       maxRowsPerFile: 100000,
     },
+    timestampReadSource: "epoch",
     stellar,
     treasury: { address: "" },
     onchainIntentsEnabled: false,

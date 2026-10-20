@@ -426,6 +426,12 @@ export interface AppConfig {
     maxSubmitAttempts: number;
   };
 
+  /**
+   * Issue #409: which column epoch timestamps are read from during the
+   * epoch → timestamptz migration. Writes always go to both.
+   */
+  timestampReadSource: "epoch" | "timestamptz";
+
   // #413 — Cold-storage archival
   archival: {
     enabled: boolean;
@@ -621,6 +627,9 @@ export default (): AppConfig => ({
     clockSkewToleranceSeconds: parseInt(process.env.SLASH_CLOCK_SKEW_TOLERANCE_SECONDS ?? "30", 10),
     maxSubmitAttempts: parseInt(process.env.SLASH_MAX_SUBMIT_ATTEMPTS ?? "5", 10),
   },
+
+  timestampReadSource:
+    process.env.TIMESTAMP_READ_SOURCE === "timestamptz" ? "timestamptz" : "epoch",
 
   archival: {
     enabled: process.env.ARCHIVAL_ENABLED === "true",

@@ -564,6 +564,10 @@ export const envValidationSchema = Joi.object({
   ORACLE_FAIL_OPEN_MAX_USD: Joi.number().min(0).default(100),
 
   // ── Transactional outbox (#396 #397) ──────────────────────────────────────
+  // Issue #409 — read epoch timestamps from the INTEGER columns ("epoch") or
+  // their timestamptz twins ("timestamptz", after the backfill is verified).
+  TIMESTAMP_READ_SOURCE: Joi.string().valid("epoch", "timestamptz").default("epoch"),
+
   OUTBOX_RELAY_ENABLED: Joi.boolean().default(true),
   OUTBOX_RELAY_INTERVAL_MS: Joi.number().integer().min(100).default(2000),
   OUTBOX_RELAY_BATCH_SIZE: Joi.number().integer().min(1).default(10),
